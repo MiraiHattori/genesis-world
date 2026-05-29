@@ -61,14 +61,12 @@ def move_vacuum_cup(
     target = np.asarray(target)
     for alpha in np.linspace(0.0, 1.0, max(2, steps)):
         pos = start + alpha * (target - start)
-        set_entity_pos(cup, pos)
-        if attached_carton is not None:
-            carton_center = pos - np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + CARTON_SIZE[2] * 0.5])
-            set_entity_pos(attached_carton, carton_center)
-
         qpos = robot.inverse_kinematics(link=end_effector, pos=pos + ROBOT_TOOL_OFFSET, quat=PICK_QUAT)
         robot.control_dofs_position(qpos[motors_dof], motors_dof)
         scene.step()
+        if attached_carton is not None:
+            carton_center = entity_pos(cup) - np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + CARTON_SIZE[2] * 0.5])
+            set_entity_pos(attached_carton, carton_center)
 
 
 def tensor_to_numpy(value):
@@ -81,6 +79,14 @@ def tensor_to_numpy(value):
 
 def entity_pos(entity):
     return tensor_to_numpy(entity.get_pos())
+
+
+def link_pos(link):
+    return tensor_to_numpy(link.get_pos())
+
+
+def align_cup_to_flange(cup, flange):
+    set_entity_pos(cup, link_pos(flange) - ROBOT_TOOL_OFFSET)
 
 
 def carton_top_center(carton):
@@ -188,7 +194,7 @@ def main():
             radius=SUCTION_CUP_RADIUS,
             height=SUCTION_CUP_HEIGHT,
             pos=vacuum_cup_start,
-            fixed=True,
+            fixed=False,
             collision=False,
         ),
         surface=gs.surfaces.Plastic(color=(0.02, 0.08, 0.10)),
@@ -205,6 +211,8 @@ def main():
         np.array([150, 150, 150, 28, 28, 28]),
     )
     robot.set_dofs_position(np.array([-1.2, -1.35, 1.65, -1.85, -1.55, 0.0]))
+    align_cup_to_flange(vacuum_cup, end_effector)
+    scene.sim.rigid_solver.add_weld_constraint(vacuum_cup.base_link_idx, end_effector.idx)
     wait(scene, 80 if not args.fast else 8)
 
     travel_steps = 90 if not args.fast else 35
