@@ -11,7 +11,7 @@ INFEED_Y = -0.08
 PICK_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
 SUCTION_CUP_HEIGHT = 0.025
 SUCTION_CUP_RADIUS = 0.035
-ROBOT_TOOL_OFFSET = np.array([0.0, 0.0, 0.045])
+ROBOT_TOOL_OFFSET = np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5])
 
 
 def parse_args():
