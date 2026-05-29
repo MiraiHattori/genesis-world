@@ -11,8 +11,7 @@ INFEED_Y = -0.08
 PICK_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
 SUCTION_CUP_HEIGHT = 0.025
 SUCTION_CUP_RADIUS = 0.035
-ROBOT_TOOL_OFFSET = np.array([0.0, 0.0, 0.14])
-TOOL_STEM_HEIGHT = ROBOT_TOOL_OFFSET[2] - SUCTION_CUP_HEIGHT
+ROBOT_TOOL_OFFSET = np.array([0.0, 0.0, 0.045])
 FINGER_OPEN = np.array([0.04, 0.04])
 
 
@@ -49,16 +48,9 @@ def set_entity_pos(entity, pos):
     entity.set_pos(np.asarray(pos), zero_velocity=True)
 
 
-def update_tool_visuals(tool, cup_pos):
-    cup, stem, flange = tool
-    set_entity_pos(cup, cup_pos)
-    set_entity_pos(stem, cup_pos + np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + TOOL_STEM_HEIGHT * 0.5]))
-    set_entity_pos(flange, cup_pos + ROBOT_TOOL_OFFSET)
-
-
 def move_vacuum_cup(
     scene,
-    tool,
+    cup,
     robot,
     end_effector,
     target,
@@ -67,12 +59,11 @@ def move_vacuum_cup(
     fingers_dof=None,
     attached_carton=None,
 ):
-    cup = tool[0]
     start = entity_pos(cup)
     target = np.asarray(target)
     for alpha in np.linspace(0.0, 1.0, max(2, steps)):
         pos = start + alpha * (target - start)
-        update_tool_visuals(tool, pos)
+        set_entity_pos(cup, pos)
         if attached_carton is not None:
             carton_center = pos - np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + CARTON_SIZE[2] * 0.5])
             set_entity_pos(attached_carton, carton_center)
@@ -113,16 +104,15 @@ def suction_sealed(cup, carton, xy_tolerance=0.018, z_tolerance=0.018):
     return xy_error <= xy_tolerance and z_error <= z_tolerance
 
 
-def attach_with_suction(scene, tool, robot, end_effector, carton, motors_dof, fingers_dof, travel_steps, settle_steps):
-    cup = tool[0]
+def attach_with_suction(scene, cup, robot, end_effector, carton, motors_dof, fingers_dof, travel_steps, settle_steps):
     top = carton_top_center(carton)
     hover = top + np.array([0.0, 0.0, 0.16 + SUCTION_CUP_HEIGHT * 0.5])
-    move_vacuum_cup(scene, tool, robot, end_effector, hover, travel_steps, motors_dof, fingers_dof)
+    move_vacuum_cup(scene, cup, robot, end_effector, hover, travel_steps, motors_dof, fingers_dof)
 
     for _ in range(4):
         top = carton_top_center(carton)
         seal = top + np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5])
-        move_vacuum_cup(scene, tool, robot, end_effector, seal, settle_steps, motors_dof, fingers_dof)
+        move_vacuum_cup(scene, cup, robot, end_effector, seal, settle_steps, motors_dof, fingers_dof)
         if suction_sealed(cup, carton):
             wait(scene, settle_steps)
             return
@@ -207,26 +197,6 @@ def main():
         ),
         surface=gs.surfaces.Plastic(color=(0.02, 0.08, 0.10)),
     )
-    vacuum_stem = scene.add_entity(
-        gs.morphs.Cylinder(
-            radius=0.012,
-            height=TOOL_STEM_HEIGHT,
-            pos=vacuum_cup_start + np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + TOOL_STEM_HEIGHT * 0.5]),
-            fixed=True,
-            collision=False,
-        ),
-        surface=gs.surfaces.Plastic(color=(0.62, 0.65, 0.67)),
-    )
-    vacuum_flange = scene.add_entity(
-        gs.morphs.Box(
-            size=(0.07, 0.07, 0.018),
-            pos=vacuum_cup_start + ROBOT_TOOL_OFFSET,
-            fixed=True,
-            collision=False,
-        ),
-        surface=gs.surfaces.Plastic(color=(0.50, 0.53, 0.55)),
-    )
-
     robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"))
     scene.build()
 
@@ -253,7 +223,7 @@ def main():
 
         attach_with_suction(
             scene,
-            (vacuum_cup, vacuum_stem, vacuum_flange),
+            vacuum_cup,
             robot,
             end_effector,
             carton,
@@ -263,13 +233,12 @@ def main():
             settle_steps,
         )
 
-        tool = (vacuum_cup, vacuum_stem, vacuum_flange)
-        move_vacuum_cup(scene, tool, robot, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, carton)
-        move_vacuum_cup(scene, tool, robot, end_effector, hover_place_cup, travel_steps, motors_dof, fingers_dof, carton)
-        move_vacuum_cup(scene, tool, robot, end_effector, release_cup, settle_steps, motors_dof, fingers_dof, carton)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, carton)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_place_cup, travel_steps, motors_dof, fingers_dof, carton)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, release_cup, settle_steps, motors_dof, fingers_dof, carton)
         wait(scene, settle_steps)
         wait(scene, settle_steps)
-        move_vacuum_cup(scene, tool, robot, end_effector, hover_place, settle_steps, motors_dof, fingers_dof)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_place, settle_steps, motors_dof, fingers_dof)
 
     print(f"Completed single-SKU palletizing for {requested_cartons} carton(s).")
 
