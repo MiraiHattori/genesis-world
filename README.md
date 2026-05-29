@@ -190,14 +190,15 @@ docker run --gpus all --rm -it \
 ```
 
 ### AMD users
-AMD users can use Genesis using the `docker/Dockerfile.amdgpu` file, which is built by running:
+AMD users can use Genesis using the `docker/Dockerfile.amdgpu` file. The image is based on ROCm 7.2.3 so recent Ryzen AI / Radeon `gfx1151` devices can run real HIP kernels instead of CPU-only fallback. Build it by running:
 ```
-docker build -t genesis-amd -f docker/Dockerfile.amdgpu docker
+docker build -t genesis-amd:local -f docker/Dockerfile.amdgpu .
 ```
 
 and can then be used by running:
 
-```xhost +local:docker \
+```bash
+xhost +local:docker
 docker run -it --network=host \
  --device=/dev/kfd \
  --device=/dev/dri \
@@ -206,12 +207,20 @@ docker run -it --network=host \
  --cap-add=SYS_PTRACE \
  --security-opt seccomp=unconfined \
  --shm-size 8G \
- -v $PWD:/workspace \
+ -v $PWD:/workspace/genesis-world \
  -e DISPLAY=$DISPLAY \
- genesis-amd
+ genesis-amd:local
  ```
 
-The examples will be accessible from `/workspace/examples`. Note: AMD users should use the ROCm (HIP) backend. This means you will need to call `gs.init(backend=gs.amdgpu)` to initialise Genesis.
+The examples will be accessible from `/workspace/genesis-world/examples`. Note: AMD users should use the ROCm (HIP) backend. This means you will need to call `gs.init(backend=gs.amdgpu)` to initialise Genesis.
+
+For the included industrial robot box-picking smoke test from this repository root, run:
+
+```bash
+./run_amd_box_picking.sh --build --fast
+```
+
+Drop `--fast` for the full three-box cycle, and add `-v` when X11 display forwarding is available.
 
 ## Contributing to Genesis
 
