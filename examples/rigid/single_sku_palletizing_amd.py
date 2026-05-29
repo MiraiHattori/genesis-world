@@ -7,7 +7,11 @@ import genesis as gs
 
 CARTON_SIZE = np.array([0.105, 0.075, 0.055])
 PALLET_TOP_Z = 0.055
+INFEED_Y = -0.08
 PICK_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
+SUCTION_CUP_HEIGHT = 0.025
+SUCTION_CUP_RADIUS = 0.035
+ROBOT_TOOL_OFFSET = np.array([0.0, 0.0, 0.14])
 
 
 def parse_args():
@@ -39,10 +43,73 @@ def add_static_box(scene, pos, size, color):
     )
 
 
-def move_ee(scene, robot, end_effector, pos, steps, motors_dof):
-    qpos = robot.inverse_kinematics(link=end_effector, pos=np.asarray(pos), quat=PICK_QUAT)
-    robot.control_dofs_position(qpos[motors_dof], motors_dof)
-    wait(scene, steps)
+def set_entity_pos(entity, pos):
+    entity.set_pos(np.asarray(pos), zero_velocity=True)
+
+
+def move_vacuum_cup(scene, cup, robot, end_effector, target, steps, motors_dof, attached_carton=None):
+    start = entity_pos(cup)
+    target = np.asarray(target)
+    for alpha in np.linspace(0.0, 1.0, max(2, steps)):
+        pos = start + alpha * (target - start)
+        set_entity_pos(cup, pos)
+        if attached_carton is not None:
+            carton_center = pos - np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5 + CARTON_SIZE[2] * 0.5])
+            set_entity_pos(attached_carton, carton_center)
+
+        qpos = robot.inverse_kinematics(link=end_effector, pos=pos + ROBOT_TOOL_OFFSET, quat=PICK_QUAT)
+        robot.control_dofs_position(qpos[motors_dof], motors_dof)
+        scene.step()
+
+
+def tensor_to_numpy(value):
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    return np.asarray(value, dtype=float)
+
+
+def entity_pos(entity):
+    return tensor_to_numpy(entity.get_pos())
+
+
+def carton_top_center(carton):
+    return entity_pos(carton) + np.array([0.0, 0.0, CARTON_SIZE[2] * 0.5])
+
+
+def suction_errors(cup, carton):
+    tool_contact = entity_pos(cup) - np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5])
+    top = carton_top_center(carton)
+    xy_error = np.linalg.norm(tool_contact[:2] - top[:2])
+    z_error = abs(tool_contact[2] - top[2])
+    return tool_contact, top, xy_error, z_error
+
+
+def suction_sealed(cup, carton, xy_tolerance=0.018, z_tolerance=0.018):
+    _, _, xy_error, z_error = suction_errors(cup, carton)
+    return xy_error <= xy_tolerance and z_error <= z_tolerance
+
+
+def attach_with_suction(scene, cup, robot, end_effector, carton, motors_dof, travel_steps, settle_steps):
+    top = carton_top_center(carton)
+    hover = top + np.array([0.0, 0.0, 0.16 + SUCTION_CUP_HEIGHT * 0.5])
+    move_vacuum_cup(scene, cup, robot, end_effector, hover, travel_steps, motors_dof)
+
+    for _ in range(4):
+        top = carton_top_center(carton)
+        seal = top + np.array([0.0, 0.0, SUCTION_CUP_HEIGHT * 0.5])
+        move_vacuum_cup(scene, cup, robot, end_effector, seal, settle_steps, motors_dof)
+        if suction_sealed(cup, carton):
+            wait(scene, settle_steps)
+            return
+
+    tool_contact, top, xy_error, z_error = suction_errors(cup, carton)
+    raise RuntimeError(
+        "Vacuum seal failed: tool contact point did not reach carton top. "
+        f"tool_contact={tool_contact.round(4).tolist()} carton_top={top.round(4).tolist()} "
+        f"xy_error={xy_error:.4f} z_error={z_error:.4f}"
+    )
 
 
 def pallet_pattern(rows, cols, layers):
@@ -83,16 +150,16 @@ def main():
 
     scene.add_entity(gs.morphs.Plane())
 
-    add_static_box(scene, pos=(0.66, -0.34, 0.025), size=(0.54, 0.16, 0.05), color=(0.18, 0.21, 0.23))
-    add_static_box(scene, pos=(0.66, -0.45, 0.095), size=(0.54, 0.018, 0.11), color=(0.06, 0.08, 0.09))
-    add_static_box(scene, pos=(0.66, -0.23, 0.095), size=(0.54, 0.018, 0.11), color=(0.06, 0.08, 0.09))
+    add_static_box(scene, pos=(0.66, INFEED_Y, 0.025), size=(0.54, 0.16, 0.05), color=(0.18, 0.21, 0.23))
+    add_static_box(scene, pos=(0.66, INFEED_Y - 0.11, 0.095), size=(0.54, 0.018, 0.11), color=(0.06, 0.08, 0.09))
+    add_static_box(scene, pos=(0.66, INFEED_Y + 0.11, 0.095), size=(0.54, 0.018, 0.11), color=(0.06, 0.08, 0.09))
     add_static_box(scene, pos=(0.43, 0.30, 0.025), size=(0.42, 0.30, 0.05), color=(0.42, 0.27, 0.12))
     add_static_box(scene, pos=(0.43, 0.30, PALLET_TOP_Z + 0.003), size=(0.40, 0.28, 0.006), color=(0.55, 0.36, 0.16))
 
     requested_cartons = args.rows * args.cols * args.layers if args.cartons is None else args.cartons
     requested_cartons = max(1, min(requested_cartons, args.rows * args.cols * args.layers))
     source_positions = [
-        np.array([0.54 + 0.075 * (i % 4), -0.34, 0.05 + CARTON_SIZE[2] * 0.5])
+        np.array([0.54 + 0.075 * (i % 4), INFEED_Y, 0.05 + CARTON_SIZE[2] * 0.5])
         for i in range(requested_cartons)
     ]
     place_positions = pallet_pattern(args.rows, args.cols, args.layers)[:requested_cartons]
@@ -105,6 +172,18 @@ def main():
                 surface=gs.surfaces.Plastic(color=(0.78, 0.56, 0.30)),
             )
         )
+
+    cup_start = np.array([source_positions[0][0], INFEED_Y, 0.32])
+    vacuum_cup = scene.add_entity(
+        gs.morphs.Cylinder(
+            radius=SUCTION_CUP_RADIUS,
+            height=SUCTION_CUP_HEIGHT,
+            pos=cup_start,
+            fixed=True,
+            collision=False,
+        ),
+        surface=gs.surfaces.Plastic(color=(0.05, 0.07, 0.08)),
+    )
 
     robot = scene.add_entity(gs.morphs.MJCF(file="xml/franka_sim/franka_panda_no_finger.xml"), vis_mode="collision")
     scene.build()
@@ -120,29 +199,32 @@ def main():
     robot.set_dofs_position(np.array([-0.65, 0.9, 0.65, -1.65, -0.75, 1.45, 0.55]))
     wait(scene, 80 if not args.fast else 8)
 
-    rigid = scene.sim.rigid_solver
-    suction_link = end_effector.idx
-    travel_steps = 90 if not args.fast else 8
-    settle_steps = 35 if not args.fast else 4
+    travel_steps = 90 if not args.fast else 35
+    settle_steps = 35 if not args.fast else 12
 
     for carton, pick, place in zip(cartons, source_positions, place_positions):
         hover_pick = pick + np.array([0.0, 0.0, 0.22])
-        touch_pick = pick + np.array([0.0, 0.0, 0.085])
         hover_place = place + np.array([0.0, 0.0, 0.24])
-        release_place = place + np.array([0.0, 0.0, 0.095])
+        release_cup = place + np.array([0.0, 0.0, CARTON_SIZE[2] * 0.5 + SUCTION_CUP_HEIGHT * 0.5])
+        hover_place_cup = release_cup + np.array([0.0, 0.0, 0.16])
 
-        move_ee(scene, robot, end_effector, hover_pick, travel_steps, motors_dof)
-        move_ee(scene, robot, end_effector, touch_pick, settle_steps, motors_dof)
-        carton_link = carton.get_link("box_baselink").idx
-        rigid.add_weld_constraint(carton_link, suction_link)
-        wait(scene, settle_steps)
+        attach_with_suction(
+            scene,
+            vacuum_cup,
+            robot,
+            end_effector,
+            carton,
+            motors_dof,
+            travel_steps,
+            settle_steps,
+        )
 
-        move_ee(scene, robot, end_effector, hover_pick, travel_steps, motors_dof)
-        move_ee(scene, robot, end_effector, hover_place, travel_steps, motors_dof)
-        move_ee(scene, robot, end_effector, release_place, settle_steps, motors_dof)
-        rigid.delete_weld_constraint(carton_link, suction_link)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_pick, travel_steps, motors_dof, carton)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_place_cup, travel_steps, motors_dof, carton)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, release_cup, settle_steps, motors_dof, carton)
         wait(scene, settle_steps)
-        move_ee(scene, robot, end_effector, hover_place, settle_steps, motors_dof)
+        wait(scene, settle_steps)
+        move_vacuum_cup(scene, vacuum_cup, robot, end_effector, hover_place, settle_steps, motors_dof)
 
     print(f"Completed single-SKU palletizing for {requested_cartons} carton(s).")
 
