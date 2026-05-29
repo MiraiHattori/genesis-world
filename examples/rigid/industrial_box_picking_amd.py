@@ -7,6 +7,8 @@ import genesis as gs
 
 BOX_SIZE = (0.055, 0.055, 0.045)
 PICK_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
+PARALLEL_JAW_OPEN = np.array([0.04, 0.04])
+PARALLEL_JAW_CLOSED = np.array([0.012, 0.012])
 
 
 def parse_args():
@@ -20,6 +22,12 @@ def parse_args():
     parser.add_argument("-v", "--vis", action="store_true", help="Show the interactive viewer.")
     parser.add_argument("--cycles", type=int, default=3, help="Number of boxes to move from infeed to pallet.")
     parser.add_argument("--fast", action="store_true", help="Run fewer simulation steps for quick validation.")
+    parser.add_argument(
+        "--tool",
+        choices=("vacuum", "parallel-jaw"),
+        default="vacuum",
+        help="End effector model. Vacuum uses a no-finger Franka and suction-style weld/release.",
+    )
     return parser.parse_args()
 
 
@@ -28,10 +36,11 @@ def wait(scene, steps):
         scene.step()
 
 
-def move_ee(scene, robot, end_effector, pos, steps, motors_dof, fingers_dof, gripper_width=0.04):
+def move_ee(scene, robot, end_effector, pos, steps, motors_dof, fingers_dof=None, finger_pos=None):
     qpos = robot.inverse_kinematics(link=end_effector, pos=np.asarray(pos), quat=PICK_QUAT)
-    robot.control_dofs_position(qpos[:-2], motors_dof)
-    robot.control_dofs_position(np.array([gripper_width, gripper_width]), fingers_dof)
+    robot.control_dofs_position(qpos[motors_dof], motors_dof)
+    if fingers_dof is not None and finger_pos is not None:
+        robot.control_dofs_position(finger_pos, fingers_dof)
     wait(scene, steps)
     return qpos
 
@@ -82,26 +91,42 @@ def main():
             )
         )
 
-    franka = scene.add_entity(gs.morphs.MJCF(file="xml/franka_emika_panda/panda.xml"), vis_mode="collision")
+    if args.tool == "vacuum":
+        robot_file = "xml/franka_sim/franka_panda_no_finger.xml"
+        end_effector_name = "panda0_gripper"
+    else:
+        robot_file = "xml/franka_emika_panda/panda.xml"
+        end_effector_name = "hand"
+
+    franka = scene.add_entity(gs.morphs.MJCF(file=robot_file), vis_mode="collision")
     scene.build()
 
     motors_dof = np.arange(7)
-    fingers_dof = np.arange(7, 9)
-    end_effector = franka.get_link("hand")
+    fingers_dof = None if args.tool == "vacuum" else np.arange(7, 9)
+    end_effector = franka.get_link(end_effector_name)
 
-    franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 120, 120]))
-    franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 12, 12]))
-    franka.set_dofs_force_range(
-        np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
-        np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
-    )
+    if args.tool == "vacuum":
+        franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000]))
+        franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200]))
+        franka.set_dofs_force_range(
+            np.array([-87, -87, -87, -87, -12, -12, -12]),
+            np.array([87, 87, 87, 87, 12, 12, 12]),
+        )
+        arm_ready = np.array([-0.7, 0.9, 0.7, -1.7, -0.8, 1.5, 0.6])
+    else:
+        franka.set_dofs_kp(np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 120, 120]))
+        franka.set_dofs_kv(np.array([450, 450, 350, 350, 200, 200, 200, 12, 12]))
+        franka.set_dofs_force_range(
+            np.array([-87, -87, -87, -87, -12, -12, -12, -100, -100]),
+            np.array([87, 87, 87, 87, 12, 12, 12, 100, 100]),
+        )
+        arm_ready = np.array([-0.7, 0.9, 0.7, -1.7, -0.8, 1.5, 0.6, *PARALLEL_JAW_OPEN])
 
-    arm_ready = np.array([-0.7, 0.9, 0.7, -1.7, -0.8, 1.5, 0.6, 0.04, 0.04])
     franka.set_dofs_position(arm_ready)
     wait(scene, 80 if not args.fast else 8)
 
     rigid = scene.sim.rigid_solver
-    hand_link = franka.get_link("hand").idx
+    suction_link = end_effector.idx
     travel_steps = 90 if not args.fast else 8
     settle_steps = 35 if not args.fast else 4
 
@@ -113,23 +138,36 @@ def main():
         hover_place = place + np.array([0.0, 0.0, 0.24])
         release_place = place + np.array([0.0, 0.0, 0.11])
 
-        move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, 0.04)
-        move_ee(scene, franka, end_effector, touch_pick, settle_steps, motors_dof, fingers_dof, 0.012)
+        if args.tool == "vacuum":
+            move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof)
+            move_ee(scene, franka, end_effector, touch_pick, settle_steps, motors_dof)
+        else:
+            move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, PARALLEL_JAW_OPEN)
+            move_ee(scene, franka, end_effector, touch_pick, settle_steps, motors_dof, fingers_dof, PARALLEL_JAW_CLOSED)
 
         box_link = box.get_link("box_baselink").idx
-        rigid.add_weld_constraint(box_link, hand_link)
+        rigid.add_weld_constraint(box_link, suction_link)
         wait(scene, settle_steps)
 
-        move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, 0.012)
-        move_ee(scene, franka, end_effector, hover_place, travel_steps, motors_dof, fingers_dof, 0.012)
-        move_ee(scene, franka, end_effector, release_place, settle_steps, motors_dof, fingers_dof, 0.012)
+        if args.tool == "vacuum":
+            move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof)
+            move_ee(scene, franka, end_effector, hover_place, travel_steps, motors_dof)
+            move_ee(scene, franka, end_effector, release_place, settle_steps, motors_dof)
+        else:
+            move_ee(scene, franka, end_effector, hover_pick, travel_steps, motors_dof, fingers_dof, PARALLEL_JAW_CLOSED)
+            move_ee(scene, franka, end_effector, hover_place, travel_steps, motors_dof, fingers_dof, PARALLEL_JAW_CLOSED)
+            move_ee(scene, franka, end_effector, release_place, settle_steps, motors_dof, fingers_dof, PARALLEL_JAW_CLOSED)
 
-        rigid.delete_weld_constraint(box_link, hand_link)
-        franka.control_dofs_position(np.array([0.04, 0.04]), fingers_dof)
+        rigid.delete_weld_constraint(box_link, suction_link)
+        if args.tool == "parallel-jaw":
+            franka.control_dofs_position(PARALLEL_JAW_OPEN, fingers_dof)
         wait(scene, settle_steps)
-        move_ee(scene, franka, end_effector, hover_place, settle_steps, motors_dof, fingers_dof, 0.04)
+        if args.tool == "vacuum":
+            move_ee(scene, franka, end_effector, hover_place, settle_steps, motors_dof)
+        else:
+            move_ee(scene, franka, end_effector, hover_place, settle_steps, motors_dof, fingers_dof, PARALLEL_JAW_OPEN)
 
-    print(f"Completed {min(args.cycles, len(boxes))} AMD box-picking cycle(s).")
+    print(f"Completed {min(args.cycles, len(boxes))} AMD {args.tool} box-picking cycle(s).")
 
 
 if __name__ == "__main__":

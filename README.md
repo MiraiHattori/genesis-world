@@ -221,6 +221,7 @@ For the included industrial robot box-picking smoke test from this repository ro
 ```
 
 Drop `--fast` for the full three-box cycle, and add `-v` when X11 display forwarding is available.
+The example defaults to a no-finger vacuum end effector; pass `--tool parallel-jaw` to compare against the original gripper-style pick.
 
 ## Contributing to Genesis
 
