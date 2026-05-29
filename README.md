@@ -223,6 +223,14 @@ For the included industrial robot box-picking smoke test from this repository ro
 Drop `--fast` for the full three-box cycle, and add `-v` when X11 display forwarding is available.
 The example defaults to a no-finger vacuum end effector; pass `--tool parallel-jaw` to compare against the original gripper-style pick.
 
+For a compact single-SKU palletizing cell with a vacuum end effector and repeated carton placement, run:
+
+```bash
+./run_amd_palletizing.sh --fast --cartons 2
+```
+
+Use `--rows`, `--cols`, and `--layers` to change the pallet pattern.
+
 ## Contributing to Genesis
 
 The Genesis project is an open and collaborative effort. We welcome all forms of contributions from the community, including:
